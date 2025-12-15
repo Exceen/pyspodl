@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import datetime
 
 import tqdm
 import requests
@@ -86,14 +87,49 @@ class Downloader:
         tracks = self.get_track_urls(link)
         total_tracks = len(tracks)
 
+        # Get playlist/album name
+        id_from_url = self.utils.get_id_type_from_url(link)
+        headers = {"Authorization": f"Bearer {self.utils.get_token()}"}
+        resp = requests.get(
+            f"https://api.spotify.com/v1/{id_from_url[1]}s/{id_from_url[0]}",
+            headers=headers,
+            timeout=10,
+        ).json()
+        playlist_name = resp["name"]
+
+        failed_count = 0
+        unavailable_count = 0
         for count, track in enumerate(tracks):
-            self.download_track(track)
+            retry_count = 0
+            while True:
+                retry_count += 1
+                try:
+                    self.download_track(track, playlist_name)
+                    break
+                except Exception as e:
+                    if 'Cannot get alternative track' in str(e):
+                        print('[download_playlist_or_album] Skipping track: Cannot get alternative track')
+                        unavailable_count += 1
+                        break
+
+                    print(e)
+                    if retry_count > 10:
+                        print('[download_playlist_or_album] Failed to download track after 10 retries, skipping.')
+                        failed_count += 1
+                        break
+                    else:
+                        print(f'[download_playlist_or_album] Error downloading track, retrying ({retry_count}/10)...')
+                        time.sleep(10)
 
             print(
                 f"[download_playlist_or_album] Progress: {count + 1}/{total_tracks}\n"
             )
 
-    def download_track(self, url):
+        print('[download_playlist_or_album] Downloading complete.')
+        print(f"[download_playlist_or_album] Failed to download {failed_count} tracks.")
+        print(f"[download_playlist_or_album] {unavailable_count} tracks are unavailable.")
+
+    def download_track(self, url, playlist_name=None):
         """
         download a track
         """
@@ -119,7 +155,19 @@ class Downloader:
             f"https://api.spotify.com/v1/tracks/{self.utils.get_id_type_from_url(url)[0]}",
             headers=headers,
             timeout=10,
-        ).json()
+        )
+
+        if resp.status_code == 429:
+            print(resp.text)
+            retry_after = int(resp.headers['Retry-After'])
+
+            now = datetime.datetime.now()
+            retry_at = now + datetime.timedelta(seconds=retry_after)
+            print(f'sleeping for ~{retry_after//60+1} minutes at {retry_at.strftime("%H:%M:%S")} to avoid rate limiting...')
+            time.sleep(retry_after)
+
+
+        resp = resp.json()
 
         artist = resp["artists"][0]["name"]  # artist
         track_title = resp["name"]  # title
@@ -127,17 +175,6 @@ class Downloader:
         album_release = resp["album"]["release_date"]  # date
         track_number = resp["track_number"]  # tracknumber
         cover_image = resp["album"]["images"][0]  # coverart, width, height
-
-        if self.premium_downloads:
-            stream = self.session.content_feeder().load(
-                track_id, VorbisOnlyAudioQuality(AudioQuality.VERY_HIGH), False, None
-            )
-
-        else:
-            stream = self.session.content_feeder().load(
-                track_id, VorbisOnlyAudioQuality(AudioQuality.HIGH), False, None
-            )
-
         filename_format = self.config.get_config_value("downloading", "track_format")
         filename = filename_format.format(
             artist=artist,
@@ -147,18 +184,30 @@ class Downloader:
             year=album_release,
         )
 
-        print(f"[download_track] Downloading {track_title} by {artist}")
-
-        path_filename = f"{self.download_path}/{filename}"
+        if playlist_name is None:
+            path_filename = f"{self.download_path}/{filename}"
+        else:
+            path_filename = f"{self.download_path}/{playlist_name}/{filename}"
 
         if os.path.exists(path_filename + ".ogg"):
-            print("[download_track] Track exists, skipping")
-
+            print(f"[download_track] Track ({track_title} by {artist}) exists, skipping")
         else:
+            print(f"[download_track] Downloading {track_title} by {artist}")
             directory_path = os.path.dirname(path_filename)
 
             if directory_path and not os.path.exists(directory_path):
                 os.makedirs(directory_path)
+
+
+            if self.premium_downloads:
+                stream = self.session.content_feeder().load(
+                    track_id, VorbisOnlyAudioQuality(AudioQuality.VERY_HIGH), False, None
+                )
+
+            else:
+                stream = self.session.content_feeder().load(
+                    track_id, VorbisOnlyAudioQuality(AudioQuality.HIGH), False, None
+                )
 
             with (
                 open(f"{path_filename}.ogg", "wb+") as track_file,

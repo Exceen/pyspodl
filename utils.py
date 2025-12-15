@@ -1,4 +1,3 @@
-import os
 import sys
 import base64
 
@@ -39,11 +38,12 @@ class Utils:
         ).json()
 
         config = self.config.read_config()
+        new_token = resp["access_token"]
 
         print("[generate_new_token] Trying to update token...")
 
         if config:
-            config["account"]["token"] = resp["access_token"]
+            config["account"]["token"] = new_token
 
             try:
                 with open("config.toml", "w", encoding="utf-8") as f:
@@ -52,14 +52,10 @@ class Utils:
 
             except Exception as e:
                 sys.exit(
-                    f'[generate_new_token] Error updating the configuration file: {e}\n\nManually update token from the config.toml file by yourself with: "{resp["access_token"]}"'
+                    f'[generate_new_token] Error updating the configuration file: {e}\n\nManually update token from the config.toml file by yourself with: "{new_token}"'
                 )
 
-        try:
-            os.execv(sys.argv[0], sys.argv)
-
-        except FileNotFoundError:
-            sys.exit("[generate_new_token] Token was updated, run pyspodl again")
+        return new_token
 
     def get_token(self):
         """
@@ -70,7 +66,7 @@ class Utils:
             token = self.config.get_config_value("account", "token")
 
         except ConfigError:
-            self.generate_new_token()
+            token = self.generate_new_token()
 
         headers = {"Authorization": f"Bearer {token}"}
         resp = requests.get(
@@ -80,7 +76,7 @@ class Utils:
         )
 
         if resp.status_code == 401:
-            self.generate_new_token()
+            token = self.generate_new_token()
 
         return token
 
